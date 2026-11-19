@@ -1,70 +1,42 @@
+using InsuranceRegression.Data;
+using InsuranceRegression.Evaluation;
+using InsuranceRegression.Models;
+using InsuranceRegression.Reporting;
+using InsuranceRegression.Training;
 using Microsoft.ML;
-using Microsoft.ML.Data;
-using InsuranceRegression;
 
 var context = new MLContext(seed: 42);
 
 string dataPath = Path.Combine(AppContext.BaseDirectory, "Data", "insurance.csv");
 
-IDataView dataView = context.Data.LoadFromTextFile<InsuranceData>(
-    dataPath,
-    hasHeader: true,
-    separatorChar: ',');
+// 1. Завантаження даних та розбиття на навчальну/тестову вибірки
+var loader = new InsuranceDataLoader(context);
+DataOperationsCatalog.TrainTestData split = loader.LoadAndSplit(dataPath);
 
-DataOperationsCatalog.TrainTestData split = context.Data.TrainTestSplit(dataView, testFraction: 0.2);
-IDataView trainData = split.TrainSet;
-IDataView testData = split.TestSet;
+// 2. Конвеєр підготовки ознак і набір тренерів
+var prepPipeline = InsuranceFeaturePipeline.Build(context);
+var trainers = RegressionTrainerCatalog.GetTrainers(context);
 
+ConsoleReporter.PrintComparisonHeader();
 
-var dataPrepPipeline = context.Transforms.Categorical.OneHotEncoding("SexEncoded", "Sex")
-    .Append(context.Transforms.Categorical.OneHotEncoding("SmokerEncoded", "Smoker"))
-    .Append(context.Transforms.Categorical.OneHotEncoding("RegionEncoded", "Region"))
-    .Append(context.Transforms.Concatenate("Features",
-        "Age", "Bmi", "Children", "SexEncoded", "SmokerEncoded", "RegionEncoded"))
-    .Append(context.Transforms.CopyColumns("Label", "Charges"))
-    .Append(context.Transforms.NormalizeMinMax("Features"));
-
-var trainers = new Dictionary<string, IEstimator<ITransformer>>
-{
-    ["Sdca (лінійна регресія)"] = context.Regression.Trainers.Sdca(labelColumnName: "Label", featureColumnName: "Features"),
-    ["LightGbm"] = context.Regression.Trainers.LightGbm(labelColumnName: "Label", featureColumnName: "Features"),
-    ["FastTreeTweedie"] = context.Regression.Trainers.FastTreeTweedie(labelColumnName: "Label", featureColumnName: "Features"),
-    ["FastForest"] = context.Regression.Trainers.FastForest(labelColumnName: "Label", featureColumnName: "Features"),
-    ["Ols"] = context.Regression.Trainers.Ols(labelColumnName: "Label", featureColumnName: "Features"),
-};
-
-ITransformer? bestModel = null;
-string bestName = string.Empty;
-double bestR2 = double.MinValue;
-
-Console.WriteLine("Порівняння регресійних моделей на варіанті 5 (прогноз медичного страхування)");
-Console.WriteLine(new string('-', 75));
-
+// 3. Навчання та оцінювання кожної моделі
+var evaluator = new RegressionEvaluator(context);
+var results = new List<TrainerResult>();
 foreach (var (name, trainer) in trainers)
 {
-    var pipeline = dataPrepPipeline.Append(trainer);
-    ITransformer model = pipeline.Fit(trainData);
-
-    IDataView predictions = model.Transform(testData);
-    RegressionMetrics metrics = context.Regression.Evaluate(predictions, labelColumnName: "Label");
-
-    Console.WriteLine($"{name,-28} R^2 = {metrics.RSquared:F4}   MAE = {metrics.MeanAbsoluteError,10:F2}   RMSE = {metrics.RootMeanSquaredError,10:F2}");
-
-    if (metrics.RSquared > bestR2)
-    {
-        bestR2 = metrics.RSquared;
-        bestModel = model;
-        bestName = name;
-    }
+    var result = evaluator.TrainAndEvaluate(name, prepPipeline.Append(trainer), split.TrainSet, split.TestSet);
+    results.Add(result);
+    ConsoleReporter.PrintComparisonRow(result);
 }
 
-Console.WriteLine(new string('-', 75));
-Console.WriteLine($"Найкраща модель: {bestName} (R^2 = {bestR2:F4})");
+// 4. Вибір найкращої моделі за R^2
+var best = evaluator.SelectBest(results);
+ConsoleReporter.PrintBest(best);
 
-
-if (bestModel is not null)
+// 5. Приклад прогнозу для нового клієнта
+if (best is not null)
 {
-    var predictionEngine = context.Model.CreatePredictionEngine<InsuranceData, InsurancePrediction>(bestModel);
+    var predictionEngine = context.Model.CreatePredictionEngine<InsuranceData, InsurancePrediction>(best.Model);
 
     var sample = new InsuranceData
     {
@@ -76,14 +48,10 @@ if (bestModel is not null)
         Region = "southeast"
     };
 
-    InsurancePrediction result = predictionEngine.Predict(sample);
-    Console.WriteLine();
-    Console.WriteLine("Приклад прогнозу для нового клієнта:");
-    Console.WriteLine($"  Вік=35, стать=male, ІМТ=28.5, дітей=2, курець=yes, регіон=southeast");
-    Console.WriteLine($"  Прогнозовані витрати на страхування: {result.PredictedCharges:F2} $");
+    ConsoleReporter.PrintSamplePrediction(predictionEngine.Predict(sample));
 
-  
+    // 6. Збереження найкращої моделі
     string modelPath = Path.Combine(AppContext.BaseDirectory, "insurance_model.zip");
-    context.Model.Save(bestModel, trainData.Schema, modelPath);
+    context.Model.Save(best.Model, split.TrainSet.Schema, modelPath);
     Console.WriteLine($"\nМодель збережено у: {modelPath}");
 }

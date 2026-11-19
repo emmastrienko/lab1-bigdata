@@ -73,3 +73,4 @@ D:\Code\uni\c#\lab_1\obj\Debug\net8.0\Insuranceregression.pdb
 D:\Code\uni\c#\lab_1\obj\Debug\net8.0\Insuranceregression.genruntimeconfig.cache
 D:\Code\uni\c#\lab_1\obj\Debug\net8.0\ref\Insuranceregression.dll
 D:\Code\uni\c#\lab_1\bin\Debug\net8.0\Data\insurance.csv
+D:\Code\uni\c#\lab_1\obj\Debug\net8.0\Insuranceregression.sourcelink.json
